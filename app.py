@@ -243,7 +243,7 @@ def get_weekly_stats():
     is_postgres = not hasattr(conn, 'row_factory')
     conn.close()
     
-    date_query = "date >= CURRENT_DATE - INTERVAL '7 days'" if is_postgres else "date >= date('now', '-7 days')"
+    date_query = "date::date >= CURRENT_DATE - INTERVAL '7 days'" if is_postgres else "date >= date('now', '-7 days')"
     
     stats = query_db(f'''
         SELECT 
@@ -266,7 +266,7 @@ def get_daily_stats():
     is_postgres = not hasattr(conn, 'row_factory')
     conn.close()
     
-    date_query = "date >= CURRENT_DATE - INTERVAL '30 days'" if is_postgres else "date >= date('now', '-30 days')"
+    date_query = "date::date >= CURRENT_DATE - INTERVAL '30 days'" if is_postgres else "date >= date('now', '-30 days')"
     
     # CASE WHEN syntax for SQLite and PG
     stats = query_db(f'''
