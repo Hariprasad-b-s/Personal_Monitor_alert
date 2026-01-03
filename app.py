@@ -1,8 +1,10 @@
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 import os
+import sqlite3
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from datetime import datetime, date
 
 app = Flask(__name__)
 CORS(app)
@@ -281,6 +283,8 @@ def get_daily_stats():
     
     return jsonify(stats)
 
+# Initialize DB on startup
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     app.run(debug=True, host='0.0.0.0', port=5001)
