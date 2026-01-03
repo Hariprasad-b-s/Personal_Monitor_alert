@@ -25,10 +25,19 @@ def get_db():
             url = f"{url}{separator}sslmode=require"
             
         try:
-            conn = psycopg2.connect(url, connect_timeout=10)
+            # Increase timeout and add keepalives for better stability
+            conn = psycopg2.connect(
+                url, 
+                connect_timeout=30,
+                keepalives=1,
+                keepalives_idle=30,
+                keepalives_interval=10,
+                keepalives_count=5
+            )
             return conn
         except Exception as e:
             print(f"Database connection error: {e}")
+            # Re-raise to be caught by the before_request handler
             raise e
     else:
         conn = sqlite3.connect(DATABASE_URL)
