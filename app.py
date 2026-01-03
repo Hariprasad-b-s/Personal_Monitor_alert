@@ -19,8 +19,17 @@ def get_db():
         if url.startswith('postgres://'):
             url = url.replace('postgres://', 'postgresql://', 1)
         
-        conn = psycopg2.connect(url)
-        return conn
+        # Ensure sslmode is set for Supabase/Production
+        if 'sslmode' not in url:
+            separator = '&' if '?' in url else '?'
+            url = f"{url}{separator}sslmode=require"
+            
+        try:
+            conn = psycopg2.connect(url, connect_timeout=10)
+            return conn
+        except Exception as e:
+            print(f"Database connection error: {e}")
+            raise e
     else:
         conn = sqlite3.connect(DATABASE_URL)
         conn.row_factory = sqlite3.Row
@@ -100,6 +109,21 @@ def init_db():
     
     conn.commit()
     conn.close()
+
+# Track if DB is initialized
+_db_initialized = False
+
+@app.before_request
+def ensure_db_init():
+    """Ensure DB is initialized before first request"""
+    global _db_initialized
+    if not _db_initialized:
+        try:
+            init_db()
+            _db_initialized = True
+        except Exception as e:
+            print(f"Error during DB initialization: {e}")
+            # Don't set initialized=True so it retries on next request
 
 @app.route('/')
 def index():
@@ -282,9 +306,6 @@ def get_daily_stats():
     ''')
     
     return jsonify(stats)
-
-# Initialize DB on startup
-init_db()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
