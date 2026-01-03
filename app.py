@@ -1,81 +1,100 @@
 from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
-import sqlite3
-from datetime import datetime, date
-import json
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
 CORS(app)
 
-DATABASE = 'daily_tracker.db'
+DATABASE_URL = os.environ.get('DATABASE_URL', 'daily_tracker.db')
 
 def get_db():
-    """Get database connection"""
-    conn = sqlite3.connect(DATABASE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """Get database connection (SQLite or PostgreSQL)"""
+    if DATABASE_URL.startswith('postgres://') or DATABASE_URL.startswith('postgresql://'):
+        # Fix for Render/Heroku which sometimes provides 'postgres://' instead of 'postgresql://'
+        url = DATABASE_URL
+        if url.startswith('postgres://'):
+            url = url.replace('postgres://', 'postgresql://', 1)
+        
+        conn = psycopg2.connect(url)
+        return conn
+    else:
+        conn = sqlite3.connect(DATABASE_URL)
+        conn.row_factory = sqlite3.Row
+        return conn
 
 def init_db():
     """Initialize database with tables"""
     conn = get_db()
     cursor = conn.cursor()
     
+    # Check if we are using PostgreSQL
+    is_postgres = hasattr(conn, 'tpc_prepare') or not hasattr(conn, 'row_factory')
+    
+    # Serial/Autoincrement differences
+    id_type = "SERIAL PRIMARY KEY" if is_postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
+    
     # Create tasks table
-    cursor.execute('''
+    cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             name TEXT NOT NULL,
             parent_id INTEGER,
             time_minutes INTEGER DEFAULT 0,
-            position INTEGER DEFAULT 0,
-            FOREIGN KEY (parent_id) REFERENCES tasks(id)
+            position INTEGER DEFAULT 0
         )
     ''')
     
     # Create daily_progress table
-    cursor.execute('''
+    cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS daily_progress (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             task_id INTEGER NOT NULL,
             date TEXT NOT NULL,
-            completed BOOLEAN DEFAULT 0,
+            completed BOOLEAN DEFAULT false,
             time_spent INTEGER DEFAULT 0,
-            FOREIGN KEY (task_id) REFERENCES tasks(id),
             UNIQUE(task_id, date)
         )
     ''')
     
     # Create timer_sessions table
-    cursor.execute('''
+    cursor.execute(f'''
         CREATE TABLE IF NOT EXISTS timer_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             task_id INTEGER NOT NULL,
             date TEXT NOT NULL,
             duration INTEGER NOT NULL,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (task_id) REFERENCES tasks(id)
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
     # Check if tasks exist, if not, populate with default tasks
-    cursor.execute('SELECT COUNT(*) as count FROM tasks')
-    if cursor.fetchone()['count'] == 0:
+    cursor.execute('SELECT COUNT(*) FROM tasks')
+    count = cursor.fetchone()[0]
+    
+    if count == 0:
         default_tasks = [
-            (None, '25 Apps (Time - 2.5 hrs)', None, 150, 1),
-            (None, '15 with claude and Linkedin 15 connections for each app', 1, 90, 1),
-            (None, '10 generics', 1, 60, 2),
-            (None, 'Leetcode Min- 2 to 5 (Time 1.5 to 2 hrs)', None, 90, 2),
-            (None, 'Projects (Data engineer (Resume), AI, ML) and push to Github - 2 hrs', None, 120, 3),
-            (None, 'Learn AI (Andrew NG) 30 mins', None, 30, 4),
-            (None, 'Learn Data Engineering other tools 1 hr', None, 60, 5),
-            (None, 'Learn ML - 1 hr', None, 60, 6),
-            (None, 'Learn MLOPS - 30 mins', None, 30, 7),
+            (1, '25 Apps (Time - 2.5 hrs)', None, 150, 1),
+            (2, '15 with claude and Linkedin 15 connections for each app', 1, 90, 1),
+            (3, '10 generics', 1, 60, 2),
+            (4, 'Leetcode Min- 2 to 5 (Time 1.5 to 2 hrs)', None, 90, 2),
+            (5, 'Projects (Data engineer (Resume), AI, ML) and push to Github - 2 hrs', None, 120, 3),
+            (6, 'Learn AI (Andrew NG) 30 mins', None, 30, 4),
+            (7, 'Learn Data Engineering other tools 1 hr', None, 60, 5),
+            (8, 'Learn ML - 1 hr', None, 60, 6),
+            (9, 'Learn MLOPS - 30 mins', None, 30, 7),
         ]
         
-        cursor.executemany('''
-            INSERT INTO tasks (id, name, parent_id, time_minutes, position)
-            VALUES (?, ?, ?, ?, ?)
-        ''', default_tasks)
+        # PostgreSQL handles many-insert differently if specifying IDs
+        for task in default_tasks:
+            cursor.execute('''
+                INSERT INTO tasks (id, name, parent_id, time_minutes, position)
+                VALUES (%s, %s, %s, %s, %s)
+            ''' if is_postgres else '''
+                INSERT INTO tasks (id, name, parent_id, time_minutes, position)
+                VALUES (?, ?, ?, ?, ?)
+            ''', task)
     
     conn.commit()
     conn.close()
@@ -85,57 +104,76 @@ def index():
     """Render main page"""
     return render_template('index.html')
 
+def query_db(query, args=(), one=False):
+    """Helper for fetching results from both DB types"""
+    conn = get_db()
+    is_postgres = not hasattr(conn, 'row_factory')
+    
+    # Adjust placeholders for PostgreSQL (%) vs SQLite (?)
+    if is_postgres:
+        query = query.replace('?', '%s')
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+    else:
+        cursor = conn.cursor()
+    
+    cursor.execute(query, args)
+    rv = cursor.fetchall()
+    
+    # Convert to list of dicts for SQLite/psycopg2 uniformity
+    if not is_postgres:
+        results = [dict(row) for row in rv]
+    else:
+        results = [dict(row) for row in rv]
+        
+    conn.close()
+    return (results[0] if results else None) if one else results
+
+def execute_db(query, args=()):
+    """Helper for executing updates/inserts"""
+    conn = get_db()
+    is_postgres = not hasattr(conn, 'row_factory')
+    
+    if is_postgres:
+        query = query.replace('?', '%s')
+    
+    cursor = conn.cursor()
+    cursor.execute(query, args)
+    conn.commit()
+    conn.close()
+    return True
+
 @app.route('/api/tasks', methods=['GET'])
 def get_tasks():
     """Get all tasks with hierarchy"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
+    tasks = query_db('''
         SELECT id, name, parent_id, time_minutes, position
         FROM tasks
         ORDER BY position, id
     ''')
-    
-    tasks = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    
     return jsonify(tasks)
 
 @app.route('/api/tasks/<int:task_id>', methods=['PUT'])
 def update_task(task_id):
     """Update task time"""
     data = request.json
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
+    execute_db('''
         UPDATE tasks
         SET time_minutes = ?
         WHERE id = ?
     ''', (data.get('time_minutes'), task_id))
-    
-    conn.commit()
-    conn.close()
-    
     return jsonify({'success': True})
 
 @app.route('/api/progress/today', methods=['GET'])
 def get_today_progress():
     """Get today's progress"""
     today = date.today().isoformat()
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute('''
+    rows = query_db('''
         SELECT task_id, completed, time_spent
         FROM daily_progress
         WHERE date = ?
     ''', (today,))
     
-    progress = {row['task_id']: dict(row) for row in cursor.fetchall()}
-    conn.close()
-    
+    progress = {row['task_id']: row for row in rows}
     return jsonify(progress)
 
 @app.route('/api/progress/toggle', methods=['POST'])
@@ -145,34 +183,23 @@ def toggle_progress():
     task_id = data.get('task_id')
     today = date.today().isoformat()
     
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    # Check if progress exists
-    cursor.execute('''
+    row = query_db('''
         SELECT completed FROM daily_progress
         WHERE task_id = ? AND date = ?
-    ''', (task_id, today))
-    
-    row = cursor.fetchone()
+    ''', (task_id, today), one=True)
     
     if row:
-        # Toggle completion
         new_status = not row['completed']
-        cursor.execute('''
+        execute_db('''
             UPDATE daily_progress
             SET completed = ?
             WHERE task_id = ? AND date = ?
         ''', (new_status, task_id, today))
     else:
-        # Create new progress entry
-        cursor.execute('''
+        execute_db('''
             INSERT INTO daily_progress (task_id, date, completed)
-            VALUES (?, ?, 1)
+            VALUES (?, ?, true)
         ''', (task_id, today))
-    
-    conn.commit()
-    conn.close()
     
     return jsonify({'success': True})
 
@@ -181,52 +208,52 @@ def save_timer_session():
     """Save timer session"""
     data = request.json
     task_id = data.get('task_id')
-    duration = data.get('duration')  # in seconds
+    duration = data.get('duration')
     today = date.today().isoformat()
     
-    conn = get_db()
-    cursor = conn.cursor()
-    
     # Save timer session
-    cursor.execute('''
+    execute_db('''
         INSERT INTO timer_sessions (task_id, date, duration)
         VALUES (?, ?, ?)
     ''', (task_id, today, duration))
     
-    # Update daily progress time_spent
-    cursor.execute('''
-        INSERT INTO daily_progress (task_id, date, time_spent)
-        VALUES (?, ?, ?)
-        ON CONFLICT(task_id, date) DO UPDATE SET
-        time_spent = time_spent + ?
-    ''', (task_id, today, duration, duration))
-    
-    conn.commit()
-    conn.close()
+    # Update daily progress using ON CONFLICT (specific to DB type, but we'll use a safer approach)
+    row = query_db('SELECT id FROM daily_progress WHERE task_id = ? AND date = ?', (task_id, today), one=True)
+    if row:
+        execute_db('''
+            UPDATE daily_progress
+            SET time_spent = time_spent + ?
+            WHERE task_id = ? AND date = ?
+        ''', (duration, task_id, today))
+    else:
+        execute_db('''
+            INSERT INTO daily_progress (task_id, date, time_spent)
+            VALUES (?, ?, ?)
+        ''', (task_id, today, duration))
     
     return jsonify({'success': True})
 
 @app.route('/api/stats/weekly', methods=['GET'])
 def get_weekly_stats():
     """Get weekly statistics for chart"""
+    # PostgreSQL requires slightly different date functions than SQLite
     conn = get_db()
-    cursor = conn.cursor()
+    is_postgres = not hasattr(conn, 'row_factory')
+    conn.close()
     
-    # Get last 7 days of data
-    cursor.execute('''
+    date_query = "date >= CURRENT_DATE - INTERVAL '7 days'" if is_postgres else "date >= date('now', '-7 days')"
+    
+    stats = query_db(f'''
         SELECT 
             date,
             COUNT(DISTINCT task_id) as tasks_completed,
             SUM(time_spent) as total_time
         FROM daily_progress
-        WHERE completed = 1
-        AND date >= date('now', '-7 days')
+        WHERE completed = {'true' if is_postgres else '1'}
+        AND {date_query}
         GROUP BY date
         ORDER BY date
     ''')
-    
-    stats = [dict(row) for row in cursor.fetchall()]
-    conn.close()
     
     return jsonify(stats)
 
@@ -234,22 +261,23 @@ def get_weekly_stats():
 def get_daily_stats():
     """Get daily statistics for the last 30 days"""
     conn = get_db()
-    cursor = conn.cursor()
+    is_postgres = not hasattr(conn, 'row_factory')
+    conn.close()
     
-    cursor.execute('''
+    date_query = "date >= CURRENT_DATE - INTERVAL '30 days'" if is_postgres else "date >= date('now', '-30 days')"
+    
+    # CASE WHEN syntax for SQLite and PG
+    stats = query_db(f'''
         SELECT 
             date,
-            COUNT(DISTINCT CASE WHEN completed = 1 THEN task_id END) as completed_tasks,
+            COUNT(DISTINCT CASE WHEN completed = {'true' if is_postgres else '1'} THEN task_id END) as completed_tasks,
             COUNT(DISTINCT task_id) as total_tasks,
             SUM(time_spent) as total_time_seconds
         FROM daily_progress
-        WHERE date >= date('now', '-30 days')
+        WHERE {date_query}
         GROUP BY date
         ORDER BY date
     ''')
-    
-    stats = [dict(row) for row in cursor.fetchall()]
-    conn.close()
     
     return jsonify(stats)
 
