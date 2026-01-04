@@ -26,6 +26,7 @@ def init_db():
             parent_id INTEGER,
             time_minutes INTEGER DEFAULT 0,
             position INTEGER DEFAULT 0,
+            target_count INTEGER DEFAULT 0,
             FOREIGN KEY (parent_id) REFERENCES tasks(id)
         )
     ''')
@@ -38,6 +39,7 @@ def init_db():
             date TEXT NOT NULL,
             completed BOOLEAN DEFAULT 0,
             time_spent INTEGER DEFAULT 0,
+            current_count INTEGER DEFAULT 0,
             FOREIGN KEY (task_id) REFERENCES tasks(id),
             UNIQUE(task_id, date)
         )
@@ -59,21 +61,37 @@ def init_db():
     cursor.execute('SELECT COUNT(*) as count FROM tasks')
     if cursor.fetchone()['count'] == 0:
         default_tasks = [
-            (None, '25 Apps (Time - 2.5 hrs)', None, 150, 1),
-            (None, '15 with claude and Linkedin 15 connections for each app', 1, 90, 1),
-            (None, '10 generics', 1, 60, 2),
-            (None, 'Leetcode Min- 2 to 5 (Time 1.5 to 2 hrs)', None, 90, 2),
-            (None, 'Projects (Data engineer (Resume), AI, ML) and push to Github - 2 hrs', None, 120, 3),
-            (None, 'Learn AI (Andrew NG) 30 mins', None, 30, 4),
-            (None, 'Learn Data Engineering other tools 1 hr', None, 60, 5),
-            (None, 'Learn ML - 1 hr', None, 60, 6),
-            (None, 'Learn MLOPS - 30 mins', None, 30, 7),
+            (None, '25 Apps (Time - 2.5 hrs)', None, 150, 1, 25),
+            (None, '15 with claude and Linkedin 15 connections for each app', 1, 90, 1, 15),
+            (None, '10 generics', 1, 60, 2, 10),
+            (None, 'Leetcode Min- 2 to 5 (Time 1.5 to 2 hrs)', None, 90, 2, 0),
+            (None, 'Projects (Data engineer (Resume), AI, ML) and push to Github - 2 hrs', None, 120, 3, 0),
+            (None, 'Learn AI (Andrew NG) 30 mins', None, 30, 4, 0),
+            (None, 'Learn Data Engineering other tools 1 hr', None, 60, 5, 0),
+            (None, 'Learn ML - 1 hr', None, 60, 6, 0),
+            (None, 'Learn MLOPS - 30 mins', None, 30, 7, 0),
         ]
         
         cursor.executemany('''
-            INSERT INTO tasks (id, name, parent_id, time_minutes, position)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO tasks (id, name, parent_id, time_minutes, position, target_count)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', default_tasks)
+    
+    # Migration: Add columns if they don't exist
+    try:
+        cursor.execute('ALTER TABLE tasks ADD COLUMN target_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass # Column already exists
+        
+    try:
+        cursor.execute('ALTER TABLE daily_progress ADD COLUMN current_count INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass # Column already exists
+    
+    # Set target_count for the 25 apps task if not set
+    cursor.execute("UPDATE tasks SET target_count = 25 WHERE name LIKE '25 Apps%'")
+    cursor.execute("UPDATE tasks SET target_count = 15 WHERE name LIKE '15 with claude%'")
+    cursor.execute("UPDATE tasks SET target_count = 10 WHERE name LIKE '10 generics%'")
     
     conn.commit()
     conn.close()
@@ -86,7 +104,7 @@ def index():
 def get_tasks():
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT id, name, parent_id, time_minutes, position FROM tasks ORDER BY position, id')
+    cursor.execute('SELECT id, name, parent_id, time_minutes, position, target_count FROM tasks ORDER BY position, id')
     tasks = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return jsonify(tasks)
@@ -106,7 +124,7 @@ def get_today_progress():
     today = date.today().isoformat()
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute('SELECT task_id, completed, time_spent FROM daily_progress WHERE date = ?', (today,))
+    cursor.execute('SELECT task_id, completed, time_spent, current_count FROM daily_progress WHERE date = ?', (today,))
     progress = {row['task_id']: dict(row) for row in cursor.fetchall()}
     conn.close()
     return jsonify(progress)
@@ -131,6 +149,44 @@ def toggle_progress():
     conn.commit()
     conn.close()
     return jsonify({'success': True})
+
+@app.route('/api/progress/increment', methods=['POST'])
+def increment_progress():
+    data = request.json
+    task_id = data.get('task_id')
+    today = date.today().isoformat()
+    
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    # Get current count and target
+    cursor.execute('SELECT target_count FROM tasks WHERE id = ?', (task_id,))
+    task = cursor.fetchone()
+    target = task['target_count'] if task else 0
+    
+    cursor.execute('SELECT current_count, completed FROM daily_progress WHERE task_id = ? AND date = ?', (task_id, today))
+    row = cursor.fetchone()
+    
+    if row:
+        new_count = (row['current_count'] or 0) + 1
+        # Auto-complete if target reached
+        is_completed = 1 if (target > 0 and new_count >= target) else row['completed']
+        cursor.execute('''
+            UPDATE daily_progress 
+            SET current_count = ?, completed = ? 
+            WHERE task_id = ? AND date = ?
+        ''', (new_count, is_completed, task_id, today))
+    else:
+        new_count = 1
+        is_completed = 1 if (target > 0 and new_count >= target) else 0
+        cursor.execute('''
+            INSERT INTO daily_progress (task_id, date, current_count, completed) 
+            VALUES (?, ?, ?, ?)
+        ''', (task_id, today, new_count, is_completed))
+    
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True, 'new_count': new_count})
 
 @app.route('/api/timer/session', methods=['POST'])
 def save_timer_session():

@@ -72,7 +72,10 @@ function createChecklistItem(task, isParent) {
     li.className = `checklist-item ${isParent ? 'parent' : 'child'}`;
     li.dataset.taskId = task.id;
 
-    const isCompleted = todayProgress[task.id]?.completed || false;
+    const progressInfo = todayProgress[task.id] || {};
+    const isCompleted = progressInfo.completed || false;
+    const currentCount = progressInfo.current_count || 0;
+
     if (isCompleted) {
         li.classList.add('completed');
     }
@@ -81,10 +84,21 @@ function createChecklistItem(task, isParent) {
     const minutes = task.time_minutes % 60;
     const timeText = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
 
+    let counterHtml = '';
+    if (task.target_count > 0) {
+        counterHtml = `
+            <div class="counter-container">
+                <span class="counter-label">${currentCount} / ${task.target_count}</span>
+                <button class="increment-btn" onclick="incrementTask(${task.id}); event.stopPropagation();">+</button>
+            </div>
+        `;
+    }
+
     li.innerHTML = `
         <div class="item-content">
             <div class="checkbox ${isCompleted ? 'checked' : ''}" onclick="toggleTask(${task.id})"></div>
             <span class="item-text ${isCompleted ? 'completed' : ''}">${task.name}</span>
+            ${counterHtml}
         </div>
         <div class="item-controls">
             <span class="time-badge">${timeText}</span>
@@ -117,6 +131,26 @@ async function toggleTask(taskId) {
         }
     } catch (error) {
         console.error('Error toggling task:', error);
+    }
+}
+
+// Increment Task Count
+async function incrementTask(taskId) {
+    try {
+        const response = await fetch(`${API_BASE}/api/progress/increment`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ task_id: taskId })
+        });
+
+        if (response.ok) {
+            await loadTodayProgress();
+            await loadStats();
+        }
+    } catch (error) {
+        console.error('Error incrementing task:', error);
     }
 }
 
