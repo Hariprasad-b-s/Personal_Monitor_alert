@@ -64,7 +64,9 @@ def init_db():
             (None, '25 Apps (Time - 2.5 hrs)', None, 150, 1, 25),
             (None, '15 with claude and Linkedin 15 connections for each app', 1, 90, 1, 15),
             (None, '10 generics', 1, 60, 2, 10),
-            (None, 'Leetcode Min- 2 to 5 (Time 1.5 to 2 hrs)', None, 90, 2, 0),
+            (None, 'Leetcode Min- 2 to 5 (Time 1.5 to 2 hrs)', None, 90, 2, 5),
+            (None, 'SQL', 4, 0, 1, 5),
+            (None, 'Python', 4, 0, 2, 5),
             (None, 'Projects (Data engineer (Resume), AI, ML) and push to Github - 2 hrs', None, 120, 3, 0),
             (None, 'Learn AI (Andrew NG) 30 mins', None, 30, 4, 0),
             (None, 'Learn Data Engineering other tools 1 hr', None, 60, 5, 0),
@@ -92,6 +94,22 @@ def init_db():
     cursor.execute("UPDATE tasks SET target_count = 25 WHERE name LIKE '25 Apps%'")
     cursor.execute("UPDATE tasks SET target_count = 15 WHERE name LIKE '15 with claude%'")
     cursor.execute("UPDATE tasks SET target_count = 10 WHERE name LIKE '10 generics%'")
+    
+    # Ensure Leetcode subtasks exist for existing installations
+    cursor.execute("SELECT id FROM tasks WHERE name LIKE 'Leetcode%'")
+    leetcode_parent = cursor.fetchone()
+    if leetcode_parent:
+        parent_id = leetcode_parent['id']
+        cursor.execute("SELECT count(*) as count FROM tasks WHERE parent_id = ? AND name IN ('SQL', 'Python')", (parent_id,))
+        if cursor.fetchone()['count'] == 0:
+            cursor.execute("INSERT INTO tasks (name, parent_id, time_minutes, position, target_count) VALUES (?, ?, ?, ?, ?)", ('SQL', parent_id, 0, 1, 5))
+            cursor.execute("INSERT INTO tasks (name, parent_id, time_minutes, position, target_count) VALUES (?, ?, ?, ?, ?)", ('Python', parent_id, 0, 2, 5))
+        else:
+            # Ensure they have a target count if already inserted with 0
+            cursor.execute("UPDATE tasks SET target_count = 5 WHERE parent_id = ? AND name IN ('SQL', 'Python') AND target_count = 0", (parent_id,))
+        
+        # Also set target for parent if 0
+        cursor.execute("UPDATE tasks SET target_count = 5 WHERE id = ? AND target_count = 0", (parent_id,))
     
     conn.commit()
     conn.close()
