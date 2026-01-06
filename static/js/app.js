@@ -94,6 +94,8 @@ function createChecklistItem(task, isParent) {
         `;
     }
 
+    const isActiveTimer = currentTimer.taskId === task.id;
+
     li.innerHTML = `
         <div class="item-content">
             <div class="checkbox ${isCompleted ? 'checked' : ''}" onclick="toggleTask(${task.id})"></div>
@@ -102,7 +104,7 @@ function createChecklistItem(task, isParent) {
         </div>
         <div class="item-controls">
             <span class="time-badge">${timeText}</span>
-            <button class="timer-btn" onclick="selectTaskForTimer(${task.id}, '${task.name.replace(/'/g, "\\'")}', ${task.time_minutes})">
+            <button class="timer-btn ${isActiveTimer ? 'active' : ''}" onclick="selectTaskForTimer(${task.id}, '${task.name.replace(/'/g, "\\'")}', ${task.time_minutes})">
                 Timer
             </button>
             <button class="edit-time-btn" onclick="openEditTimeModal(${task.id}, '${task.name.replace(/'/g, "\\'")}', ${task.time_minutes})">
@@ -508,10 +510,5 @@ function setupEventListeners() {
     });
 }
 
-// Refresh data periodically
-setInterval(async () => {
-    if (!currentTimer.isRunning) {
-        await loadTodayProgress();
-        await loadStats();
-    }
-}, 60000); // Every minute
+// Refresh data only on manual trigger or specific actions
+// Removed background polling to ensure timer stability
